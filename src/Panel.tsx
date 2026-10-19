@@ -1,6 +1,7 @@
-import { CSSProperties, useState } from 'react';
+import { CSSProperties, useEffect, useState } from 'react';
 import { Icon } from './Icon';
-import { Card, LINK_COLORS, LineStyle, Link, TYPE_META, isHttp } from './types';
+import { addFile, fmtSize, getBlob, isImage, openAttachment } from './blobs';
+import { Attachment, Card, LINK_COLORS, LineStyle, Link, TYPE_META, isHttp } from './types';
 
 function readImage(file: File): Promise<string> {
   return new Promise((res, rej) => {
@@ -22,6 +23,16 @@ function readImage(file: File): Promise<string> {
   });
 }
 
+function Thumb({ a, onOpen }: { a: Attachment; onOpen(): void }) {
+  const [url, setUrl] = useState('');
+  useEffect(() => {
+    let u = ''; let alive = true;
+    getBlob(a.id).then((b) => { if (b && alive) { u = URL.createObjectURL(b); setUrl(u); } }).catch(() => undefined);
+    return () => { alive = false; if (u) URL.revokeObjectURL(u); };
+  }, [a.id]);
+  return <button className="thumb" onClick={onOpen} title={a.name}>{url ? <img src={url} alt={a.name} /> : <Icon name="image" size={18} />}</button>;
+}
+
 interface CP {
   card: Card; cards: Card[]; links: Link[];
   onChange(patch: Partial<Card>): void;
@@ -33,6 +44,21 @@ export function CardPanel({ card, cards, links, onChange, onDelete, onDuplicate,
   const m = TYPE_META[card.type];
   const [src, setSrc] = useState('');
   const addSrc = () => { const s = src.trim(); if (s) { onChange({ sources: [...card.sources, s] }); setSrc(''); } };
+  const [busy, setBusy] = useState(false);
+  const pickFiles = async (fl: FileList | null) => {
+    const files = Array.from(fl || []);
+    if (!files.length) return;
+    setBusy(true);
+    const added: Attachment[] = [];
+    for (const f of files) {
+      try { added.push(await addFile(f)); } catch (e) { onError((e as Error).message || 'Fichier non ajouté.'); }
+    }
+    setBusy(false);
+    if (added.length) onChange({ attachments: [...(card.attachments || []), ...added] });
+  };
+  const removeAtt = (a: Attachment) => {
+    onChange({ attachments: (card.attachments || []).filter((x) => x.id !== a.id) });
+  };
   const mine = links.filter((l) => l.from === card.id || l.to === card.id);
   const name = (id: string) => cards.find((c) => c.id === id)?.title || 'Sans titre';
 
@@ -72,6 +98,40 @@ export function CardPanel({ card, cards, links, onChange, onDelete, onDuplicate,
             {card.image && <button className="btn ghost" onClick={() => onChange({ image: undefined })}>Retirer l’image</button>}
           </div>
         )}
+        <div className="field">
+          <span>Pièces jointes ({(card.attachments || []).length})</span>
+          {(card.attachments || []).some(isImage) && (
+            <div className="thumbs">
+              {(card.attachments || []).filter(isImage).map((a) => (
+                <div key={a.id} className="thumb-wrap">
+                  <Thumb a={a} onOpen={() => openAttachment(a).catch(() => onError('Ouverture impossible.'))} />
+                  <button className="x" onClick={() => removeAtt(a)} aria-label={`Retirer ${a.name}`}><Icon name="x" size={12} /></button>
+                </div>
+              ))}
+            </div>
+          )}
+          <ul className="sources">
+            {(card.attachments || []).filter((a) => !isImage(a)).map((a) => (
+              <li key={a.id}>
+                <button className="linkbtn" onClick={() => openAttachment(a).catch(() => onError('Ouverture impossible.'))} title="Ouvrir">
+                  <Icon name="file" size={13} /> {a.name} <small>· {fmtSize(a.size)}</small>
+                </button>
+                <button className="x" onClick={() => openAttachment(a, true).catch(() => onError('Téléchargement impossible.'))} aria-label="Télécharger"><Icon name="download" size={14} /></button>
+                <button className="x" onClick={() => removeAtt(a)} aria-label={`Retirer ${a.name}`}><Icon name="x" size={14} /></button>
+              </li>
+            ))}
+          </ul>
+          <div className="row">
+            <label className="btn ghost file">
+              <Icon name="image" size={14} /> Ajouter des images
+              <input type="file" accept="image/*" multiple hidden onChange={(e) => { pickFiles(e.target.files); e.target.value = ''; }} />
+            </label>
+            <label className="btn ghost file">
+              <Icon name="file" size={14} /> Ajouter des documents
+              <input type="file" multiple hidden onChange={(e) => { pickFiles(e.target.files); e.target.value = ''; }} />
+            </label>
+          </div>
+        </div>
         <label>Notes
           <textarea rows={5} value={card.notes} onChange={(e) => onChange({ notes: e.target.value })} placeholder="Observations, hypothèses, niveau de confiance…" />
         </label>
@@ -149,6 +209,9 @@ export function LinkPanel({ link, cards, onChange, onDelete, onClose }: LP) {
         </label>
         <label className="check">
           <input type="checkbox" checked={link.arrow} onChange={(e) => onChange({ arrow: e.target.checked })} /> Afficher la flèche
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={!!link.curve} onChange={(e) => onChange({ curve: e.target.checked })} /> Fil courbe
         </label>
         <div className="row">
           <button className="btn ghost" onClick={() => onChange({ from: link.to, to: link.from })}><Icon name="swap" size={14} /> Inverser</button>

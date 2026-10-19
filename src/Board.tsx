@@ -1,8 +1,26 @@
-import { CSSProperties, PointerEvent as RPE, forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
+import { CSSProperties, PointerEvent as RPE, forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { Icon } from './Icon';
+import { getBlob, isImage } from './blobs';
 import { CARD_W, Card, Investigation, Sel, TYPE_META, View, cardH } from './types';
 
-export interface BoardHandle { getCenter(): { x: number; y: number }; fit(): void; focus(id: string): void; zoomBy(f: number): void }
+// Aperçu d'une carte Photo : image principale, sinon première image jointe, sinon « Aucune image ».
+function PhotoPreview({ c }: { c: Card }) {
+  const att = (c.attachments || []).find(isImage);
+  const [url, setUrl] = useState('');
+  useEffect(() => {
+    if (c.image || !att) { setUrl(''); return; }
+    let u = ''; let alive = true;
+    getBlob(att.id).then((b) => { if (b && alive) { u = URL.createObjectURL(b); setUrl(u); } }).catch(() => undefined);
+    return () => { alive = false; if (u) URL.revokeObjectURL(u); };
+  }, [c.image, att?.id]);
+  const src = c.image || url;
+  if (src) return <img src={src} alt="" draggable={false} />;
+  if (att) return <div className="noimg"><Icon name="image" size={18} />Chargement…</div>;
+  return <div className="noimg"><Icon name="image" size={18} />Aucune image</div>;
+}
+
+
+export interface BoardHandle { getCenter(): { x: number; y: number }; fit(): void; focus(id: string): void; zoomBy(f: number): void; toWorld(clientX: number, clientY: number): { x: number; y: number } }
 
 interface Props {
   inv: Investigation;
@@ -65,6 +83,10 @@ const Board = forwardRef<BoardHandle, Props>((p, ref) => {
     getCenter() {
       const r = rect(), o = viewRef.current;
       return { x: (r.width / 2 - o.x) / o.k, y: (r.height / 2 - o.y) / o.k };
+    },
+    toWorld(cx: number, cy: number) {
+      const r = rect(), o = viewRef.current;
+      return { x: (cx - r.left - o.x) / o.k, y: (cy - r.top - o.y) / o.k };
     },
     fit,
   }));
@@ -162,13 +184,17 @@ const Board = forwardRef<BoardHandle, Props>((p, ref) => {
             const s = edge(a, cb.x, cb.y), t = edge(b, ca.x, ca.y);
             const sel = p.selected?.kind === 'link' && p.selected.id === l.id;
             const dash = l.style === 'dashed' ? `${l.width * 4} ${l.width * 3}` : l.style === 'dotted' ? `${l.width} ${l.width * 2.5}` : undefined;
-            const mx = (s.x + t.x) / 2, my = (s.y + t.y) / 2;
+            const len = Math.hypot(t.x - s.x, t.y - s.y) || 1, off = l.curve ? len * 0.2 : 0;
+            const qx = (s.x + t.x) / 2 - ((t.y - s.y) / len) * off, qy = (s.y + t.y) / 2 + ((t.x - s.x) / len) * off;
+            const d = l.curve ? `M${s.x},${s.y} Q${qx},${qy} ${t.x},${t.y}` : `M${s.x},${s.y} L${t.x},${t.y}`;
+            const mx = l.curve ? 0.25 * s.x + 0.5 * qx + 0.25 * t.x : (s.x + t.x) / 2;
+            const my = l.curve ? 0.25 * s.y + 0.5 * qy + 0.25 * t.y : (s.y + t.y) / 2;
             return (
               <g key={l.id} className={sel ? 'lk sel' : 'lk'}>
-                {sel && <line x1={s.x} y1={s.y} x2={t.x} y2={t.y} stroke={l.color} strokeOpacity={0.22} strokeWidth={l.width + 8} strokeLinecap="round" />}
-                <line x1={s.x} y1={s.y} x2={t.x} y2={t.y} stroke={l.color} strokeWidth={l.width} strokeDasharray={dash}
+                {sel && <path d={d} fill="none" stroke={l.color} strokeOpacity={0.22} strokeWidth={l.width + 8} strokeLinecap="round" />}
+                <path d={d} fill="none" stroke={l.color} strokeWidth={l.width} strokeDasharray={dash}
                   strokeLinecap="round" markerEnd={l.arrow ? `url(#ah-${l.id})` : undefined} />
-                <line x1={s.x} y1={s.y} x2={t.x} y2={t.y} stroke="transparent" strokeWidth={18} pointerEvents="stroke"
+                <path d={d} fill="none" stroke="transparent" strokeWidth={18} pointerEvents="stroke"
                   style={{ cursor: 'pointer' }}
                   onPointerDown={(e) => { e.stopPropagation(); p.onSelect({ kind: 'link', id: l.id }); }} />
                 {l.label && (
@@ -194,11 +220,12 @@ const Board = forwardRef<BoardHandle, Props>((p, ref) => {
                 <span className="kind">{m.label}</span>
                 <span className="badges">
                   {c.notes && <i title="Notes"><Icon name="note" size={11} /></i>}
+                  {(c.attachments?.length ?? 0) > 0 && <i title="Pièces jointes"><Icon name="file" size={11} />{c.attachments!.length}</i>}
                   {c.sources.length > 0 && <i title="Sources"><Icon name="clip" size={11} />{c.sources.length}</i>}
                 </span>
               </div>
               {c.type === 'photo' && (
-                c.image ? <img src={c.image} alt="" draggable={false} /> : <div className="noimg"><Icon name="image" size={18} />Aucune image</div>
+                <PhotoPreview c={c} />
               )}
               <div className="card-t">{c.title || 'Sans titre'}</div>
               {c.content && <div className="card-c">{c.content}</div>}

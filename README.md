@@ -38,9 +38,13 @@ Le contenu de `dist/` est statique et peut être hébergé n'importe où.
 | Rechercher une carte | **Ctrl/⌘ + K** : nom, contenu, notes, sources ; Entrée pour centrer la vue dessus |
 | Tout afficher | Bouton d'ajustement ou touche **F** |
 | Déplacer une carte | Glisser-déposer |
-| Voir / modifier une carte | Cliquer dessus : titre, contenu, notes, sources, image (cartes Photo) |
+| Voir / modifier une carte | Cliquer dessus : titre, contenu, notes, sources, image (cartes Photo), pièces jointes |
+| Joindre des fichiers | Sur **toutes** les cartes : « Ajouter des images » et « Ajouter des documents » (PDF, Word, Excel, etc., jusqu'à 100 Mo par fichier). Clic pour ouvrir, icône ↓ pour télécharger |
 | Relier deux cartes | Bouton **Relier** ou touche **L**, puis cliquer la carte de départ et celle d'arrivée |
 | Personnaliser un lien | Cliquer sur la ligne : étiquette, couleur, style, épaisseur, flèche, inversion |
+| Glisser-déposer des fichiers | Déposer un fichier sur une carte = pièce jointe ; sur le fond = nouvelle carte (Photo pour une image, Document sinon) |
+| Annuler / rétablir | **Ctrl/⌘ Z** et **Ctrl/⌘ Maj Z** (ou Ctrl Y), ou boutons de la barre d'outils |
+| Fil courbe | Cliquer sur un lien puis cocher « Fil courbe » |
 | Supprimer | Bouton Supprimer, touche Suppr, ou bouton dans le panneau de détails |
 | Quitter un mode / désélectionner | Échap |
 | Plusieurs enquêtes | Panneau de gauche (☰ sur mobile) : créer, changer, renommer, supprimer |
@@ -48,7 +52,7 @@ Le contenu de `dist/` est statique et peut être hébergé n'importe où.
 
 ## Sauvegarde
 
-Chaque modification est enregistrée automatiquement dans le navigateur (indicateur « Sauvegardé » en haut). Les images sont réduites (640 px max) pour économiser la place. Les données sont propres à un navigateur et un domaine : utilisez l'export JSON pour sauvegarder ou transférer vos enquêtes. Vider les données du site efface les enquêtes.
+Les fichiers joints orphelins (cartes supprimées) sont nettoyés au prochain démarrage, ce qui permet d'annuler une suppression. Chaque modification est enregistrée automatiquement dans le navigateur (indicateur « Sauvegardé » en haut). L'image principale des cartes Photo est réduite (640 px max). Les pièces jointes sont conservées telles quelles dans IndexedDB (pas de limite de 5 Mo), et incluses dans l'export JSON. Les données sont propres à un navigateur et un domaine : utilisez l'export JSON pour sauvegarder ou transférer vos enquêtes. Vider les données du site efface les enquêtes.
 
 ## Structure
 
@@ -60,6 +64,7 @@ src/
   Palette.tsx   Recherche de cartes (Ctrl/⌘ K)
   Icon.tsx      Icônes SVG et logo
   storage.ts    localStorage, validation des imports
+  blobs.ts      Fichiers joints (IndexedDB)
   types.ts      Types et constantes
   styles.css    Thème
 ```

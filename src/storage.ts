@@ -1,4 +1,4 @@
-import { AppState, Card, Investigation, Link, DEFAULT_LINK_COLOR, TYPE_META, uid } from './types';
+import { AppState, Attachment, Card, Investigation, Link, DEFAULT_LINK_COLOR, TYPE_META, uid } from './types';
 
 const KEY = 'traceboard.v1';
 const num = (v: unknown, d: number) => (typeof v === 'number' && isFinite(v) ? v : d);
@@ -20,6 +20,9 @@ export function sanitizeInv(raw: any): Investigation | null {
       sources: Array.isArray(c.sources) ? c.sources.filter((s: unknown) => typeof s === 'string') : [],
       x: num(c.x, 0), y: num(c.y, 0),
       image: typeof c.image === 'string' && c.image.startsWith('data:image/') ? c.image : undefined,
+      attachments: (Array.isArray(c.attachments) ? c.attachments : [])
+        .filter((a: any) => a && typeof a.id === 'string')
+        .map((a: any): Attachment => ({ id: a.id, name: str(a.name, 'fichier'), mime: str(a.mime, 'application/octet-stream'), size: num(a.size, 0), added: num(a.added, Date.now()) })),
       created: num(c.created, Date.now()),
     }));
   const ids = new Set(cards.map((c) => c.id));
@@ -30,7 +33,7 @@ export function sanitizeInv(raw: any): Investigation | null {
       id: typeof l.id === 'string' ? l.id : uid(), from: l.from, to: l.to, label: str(l.label),
       color: /^#[0-9a-f]{6}$/i.test(str(l.color)) ? l.color : DEFAULT_LINK_COLOR,
       style: styles.includes(l.style) ? l.style : 'solid',
-      width: Math.min(8, Math.max(1, num(l.width, 2))), arrow: l.arrow !== false,
+      width: Math.min(8, Math.max(1, num(l.width, 2))), arrow: l.arrow !== false, curve: l.curve === true,
     }));
   const v = raw.view || {};
   return {
@@ -42,13 +45,18 @@ export function sanitizeInv(raw: any): Investigation | null {
   };
 }
 
-export function parseImport(text: string): Investigation[] {
+export interface ImportResult { list: Investigation[]; files: Record<string, string> }
+
+export function parseImport(text: string): ImportResult {
   let data: any;
   try { data = JSON.parse(text); } catch { throw new Error('Fichier JSON invalide.'); }
   const list: any[] = Array.isArray(data) ? data : Array.isArray(data?.investigations) ? data.investigations : data?.cards ? [data] : [];
   const out = list.map(sanitizeInv).filter((i): i is Investigation => !!i);
   if (!out.length) throw new Error('Aucune enquête TraceBoard trouvée dans ce fichier.');
-  return out.map((i) => ({ ...i, id: uid() }));
+  const files: Record<string, string> = {};
+  const src = data && typeof data.files === 'object' && data.files ? data.files : {};
+  for (const k of Object.keys(src)) if (typeof src[k] === 'string' && src[k].startsWith('data:')) files[k] = src[k];
+  return { list: out.map((i) => ({ ...i, id: uid() })), files };
 }
 
 const LEGACY_DEMO = 'Opération DÉMO';

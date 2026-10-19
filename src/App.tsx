@@ -1,10 +1,11 @@
-import { CSSProperties, useCallback, useEffect, useRef, useState } from 'react';
+import { CSSProperties, DragEvent, useCallback, useEffect, useRef, useState } from 'react';
 import Board, { BoardHandle } from './Board';
+import { addFile, askPersistent, collectFiles, copyAttachments, dataUrlToBlob, gcBlobs, putBlob } from './blobs';
 import { Icon, Logo } from './Icon';
 import Palette from './Palette';
 import { CardPanel, LinkPanel } from './Panel';
 import { loadState, newInvestigation, parseImport, saveState } from './storage';
-import { AppState, CARD_W, Card, CardType, DEFAULT_LINK_COLOR, Investigation, Link, Sel, TYPE_META, View, uid } from './types';
+import { AppState, CARD_W, Card, cardH, CardType, DEFAULT_LINK_COLOR, Investigation, Link, Sel, TYPE_META, View, uid } from './types';
 
 const ORDER: CardType[] = ['person', 'alias', 'photo', 'url', 'phone', 'document', 'text'];
 const download = (name: string, data: unknown) => {
@@ -32,6 +33,40 @@ export default function App() {
   const selCard = sel?.kind === 'card' ? inv.cards.find((c) => c.id === sel.id) : undefined;
   const selLink = sel?.kind === 'link' ? inv.links.find((l) => l.id === sel.id) : undefined;
 
+  useEffect(() => {
+    askPersistent();
+    const used = new Set(stateRef.current.investigations.flatMap((i) => i.cards.flatMap((c) => (c.attachments || []).map((a) => a.id))));
+    gcBlobs(used);
+  }, []);
+
+  // Historique annuler / rétablir (les déplacements rapprochés sont regroupés en une seule étape).
+  const hist = useRef({ past: [] as Investigation[][], future: [] as Investigation[][], last: state.investigations, t: 0, skip: false });
+  const [hv, setHv] = useState(0);
+  useEffect(() => {
+    const h = hist.current, cur = state.investigations;
+    if (h.skip) { h.skip = false; h.last = cur; return; }
+    if (cur === h.last) return;
+    const changed = cur.length !== h.last.length || cur.some((i, n) => {
+      const o = h.last[n]; return !o || o.id !== i.id || o.cards !== i.cards || o.links !== i.links || o.name !== i.name;
+    });
+    if (changed && Date.now() - h.t > 600) {
+      h.past.push(h.last); if (h.past.length > 100) h.past.shift();
+      h.future = []; setHv((n) => n + 1);
+    }
+    if (changed) h.t = Date.now();
+    h.last = cur;
+  }, [state.investigations]);
+  const restore = (target: Investigation[]) => {
+    hist.current.skip = true;
+    setState((s) => {
+      const invs = target.map((i) => { const now = s.investigations.find((x) => x.id === i.id); return now ? { ...i, view: now.view } : i; });
+      return { investigations: invs, activeId: invs.some((i) => i.id === s.activeId) ? s.activeId : invs[0].id };
+    });
+    setSel(null); setLinkFrom(null); setHv((n) => n + 1);
+  };
+  const undo = () => { const h = hist.current, p = h.past.pop(); if (!p) return; h.future.push(stateRef.current.investigations); restore(p); };
+  const redo = () => { const h = hist.current, f = h.future.pop(); if (!f) return; h.past.push(stateRef.current.investigations); restore(f); };
+  const canUndo = hv >= 0 && hist.current.past.length > 0, canRedo = hv >= 0 && hist.current.future.length > 0;
   useEffect(() => {
     setStatus('saving');
     const t = setTimeout(() => setStatus(saveState(state) ? 'saved' : 'error'), 300);
@@ -77,8 +112,9 @@ export default function App() {
     patch((i) => ({ ...i, cards: [...i.cards, c] }));
     setSel({ kind: 'card', id: c.id }); setLinkMode(false); setLinkFrom(null);
   };
-  const duplicate = (c: Card) => {
-    const n = { ...c, id: uid(), x: c.x + 30, y: c.y + 30, title: c.title + ' (copie)', created: Date.now() };
+  const duplicate = async (c: Card) => {
+    const attachments = await copyAttachments(c.attachments).catch(() => []);
+    const n = { ...c, attachments, id: uid(), x: c.x + 30, y: c.y + 30, title: c.title + ' (copie)', created: Date.now() };
     patch((i) => ({ ...i, cards: [...i.cards, n] }));
     setSel({ kind: 'card', id: n.id });
   };
@@ -102,6 +138,11 @@ export default function App() {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setPalette((p) => !p); return; }
       const t = e.target as HTMLElement;
       if (/INPUT|TEXTAREA|SELECT/.test(t.tagName)) return;
+      if ((e.metaKey || e.ctrlKey) && !e.altKey) {
+        const k = e.key.toLowerCase();
+        if (k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
+        if (k === 'y') { e.preventDefault(); redo(); return; }
+      }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if ((e.key === 'Delete' || e.key === 'Backspace') && sel) {
         e.preventDefault();
@@ -134,16 +175,61 @@ export default function App() {
   };
   const rename = (name: string) => patch((i) => ({ ...i, name }));
 
-  const exportOne = () => download(`traceboard-${slug(inv.name)}.json`, { app: 'TraceBoard', version: 1, investigations: [inv] });
-  const exportAll = () => download('traceboard-toutes-les-enquetes.json', { app: 'TraceBoard', version: 1, investigations: state.investigations });
+  const doExport = async (name: string, list: Investigation[]) => {
+    try {
+      const files = await collectFiles(list.flatMap((i) => i.cards));
+      download(name, { app: 'TraceBoard', version: 2, investigations: list, files });
+    } catch { notify('Export impossible.'); }
+  };
+  const exportOne = () => doExport(`traceboard-${slug(inv.name)}.json`, [inv]);
+  const exportAll = () => doExport('traceboard-toutes-les-enquetes.json', state.investigations);
   const importFile = async (f?: File) => {
     if (!f) return;
     try {
-      const list = parseImport(await f.text());
+      const { list, files } = parseImport(await f.text());
+      // Les fichiers joints reçoivent de nouveaux identifiants pour ne jamais être partagés entre enquêtes.
+      for (const i of list) for (const c of i.cards) {
+        const kept: typeof c.attachments = [];
+        for (const a of c.attachments || []) {
+          const data = files[a.id];
+          if (!data) continue;
+          const id = uid();
+          await putBlob(id, await dataUrlToBlob(data));
+          kept.push({ ...a, id });
+        }
+        c.attachments = kept;
+      }
       setState((s) => ({ investigations: [...s.investigations, ...list], activeId: list[0].id }));
       setSel(null);
       notify(`${list.length} enquête(s) importée(s).`);
-    } catch (e) { notify((e as Error).message); }
+    } catch (e) { notify((e as Error).message || 'Import impossible.'); }
+  };
+
+  // Glisser-déposer de fichiers : sur une carte = pièce jointe ; sur le fond = nouvelle carte (Photo ou Document).
+  const dropFiles = async (e: DragEvent<HTMLElement>) => {
+    e.preventDefault();
+    const files = Array.from(e.dataTransfer.files || []);
+    if (!files.length || !board.current) return;
+    const at = board.current.toWorld(e.clientX, e.clientY);
+    const target = inv.cards.find((c) => at.x >= c.x && at.x <= c.x + CARD_W && at.y >= c.y && at.y <= c.y + cardH(c));
+    const ok: { f: File; a: Awaited<ReturnType<typeof addFile>> }[] = [];
+    for (const f of files) {
+      try { ok.push({ f, a: await addFile(f) }); } catch (err) { notify((err as Error).message || 'Fichier non ajouté.'); }
+    }
+    if (!ok.length) return;
+    if (target) {
+      patch((i) => ({ ...i, cards: i.cards.map((c) => (c.id === target.id ? { ...c, attachments: [...(c.attachments || []), ...ok.map((o) => o.a)] } : c)) }));
+      setSel({ kind: 'card', id: target.id });
+      notify(`${ok.length} fichier(s) joint(s) à « ${target.title || 'Sans titre'} ».`);
+      return;
+    }
+    const made: Card[] = ok.map(({ a }, n) => {
+      const type: CardType = a.mime.startsWith('image/') ? 'photo' : 'document';
+      return { id: uid(), type, title: a.name.replace(/\.[^.]+$/, '') || TYPE_META[type].label, content: type === 'document' ? a.name : '', notes: '', sources: [], created: Date.now(), attachments: [a], x: Math.round(at.x - CARD_W / 2 + n * (CARD_W + 24)), y: Math.round(at.y - 48) };
+    });
+    patch((i) => ({ ...i, cards: [...i.cards, ...made] }));
+    setSel({ kind: 'card', id: made[made.length - 1].id });
+    notify(`${made.length} carte(s) créée(s) à partir des fichiers.`);
   };
 
   const nCards = inv.cards.length, nLinks = inv.links.length;
@@ -194,7 +280,7 @@ export default function App() {
         </aside>
         {menu && <div className="scrim" onClick={() => setMenu(false)} />}
 
-        <main className="stage">
+        <main className="stage" onDragOver={(e) => { if (e.dataTransfer.types.includes('Files')) e.preventDefault(); }} onDrop={dropFiles}>
           <Board
             ref={board} inv={inv} selected={sel} linkMode={linkMode} linkFrom={linkFrom}
             onView={setView} onMoveCard={moveCard} onSelect={setSel} onLinkClick={onLinkClick}
@@ -227,6 +313,9 @@ export default function App() {
                 <Icon name={TYPE_META[t].icon} size={16} /><span>{TYPE_META[t].label}</span><kbd>{TYPE_META[t].key}</kbd>
               </button>
             ))}
+            <span className="sep" />
+            <button className="dock-btn" disabled={!canUndo} onClick={undo} title="Annuler (Ctrl Z)"><Icon name="undo" size={16} /><span>Annuler</span></button>
+            <button className="dock-btn" disabled={!canRedo} onClick={redo} title="Rétablir (Ctrl Shift Z)"><Icon name="redo" size={16} /><span>Rétablir</span></button>
             <span className="sep" />
             <button className={'dock-btn link' + (linkMode ? ' on' : '')} onClick={toggleLink} title="Relier deux cartes (L)">
               <Icon name="link" size={16} /><span>Relier</span><kbd>L</kbd>

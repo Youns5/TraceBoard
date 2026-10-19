@@ -2,6 +2,14 @@ export type CardType = 'photo' | 'text' | 'person' | 'alias' | 'url' | 'phone' |
 export type IconName = 'user' | 'at' | 'image' | 'globe' | 'phone' | 'file' | 'text';
 export type LineStyle = 'solid' | 'dashed' | 'dotted';
 
+export interface Attachment {
+  id: string;
+  name: string;
+  mime: string;
+  size: number;
+  added: number;
+}
+
 export interface Card {
   id: string;
   type: CardType;
@@ -12,6 +20,7 @@ export interface Card {
   x: number;
   y: number;
   image?: string;
+  attachments?: Attachment[];
   created: number;
 }
 
@@ -24,6 +33,7 @@ export interface Link {
   style: LineStyle;
   width: number;
   arrow: boolean;
+  curve?: boolean;
 }
 
 export interface View { x: number; y: number; k: number }
